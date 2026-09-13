@@ -1,0 +1,6 @@
+python310.zip
+.
+
+# Uncomment to run site.main() automatically
+..\..\backend-python
+import site

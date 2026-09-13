@@ -1,0 +1,33 @@
+# Backup Manifest
+
+## Included Directories and Files
+- `frontend/` (Next.js Application Source)
+  - `src/` (Components, Hooks, Pages, Lib)
+  - `public/` (Images, Videos, Icons)
+  - `package.json`, `tailwind.config.ts`, `next.config.ts`, `tsconfig.json`
+- `backend/` (Node.js API Source)
+  - `src/` (Routes, Services)
+  - `package.json`, `tsconfig.json`
+- `backend-python/` (FastAPI / AI Pipeline Source)
+  - `catvton_files/`
+  - `requirements.txt`
+- `tools/` (Node/Python standalone tools if required)
+- Documentation Files:
+  - `README.md`
+  - `PROJECT_INVENTORY.md`
+  - `CURRENT_PROGRESS.md`
+  - `FRONTEND_CONTINUATION.md`
+  - `AWS_BACKEND_STATUS.md`
+  - `ENVIRONMENT_SETUP.md`
+  - `NEW_LAPTOP_SETUP.md`
+  - `ANTIGRAVITY_CONTINUE_PROMPT.md`
+- Configuration:
+  - `.env.example`
+  - `firestore.rules`, `firestore.indexes.json`
+
+## Excluded Files and Reasons
+1. **`node_modules/` (in all directories)**: Excluded because it is a generated dependency cache. It is easily recreated by running `npm install` on the new machine, and excluding it saves hundreds of megabytes of unnecessary transfer time.
+2. **`.next/` (in frontend)**: Excluded because it is a generated build cache. It will be automatically recreated when you run `npm run dev` on the new machine.
+3. **`__pycache__/`**: Excluded because they are compiled Python bytecode files that are automatically regenerated.
+4. **`.env`, `.env.local`**: Excluded for SECURITY. These contain sensitive private keys (Firebase, APIs). You must manually securely transfer them.
+5. **`.ssh_key.pem`, `.ssh_key2.pem`**: Excluded for SECURITY. These are private SSH keys for AWS EC2 access. You must manually securely transfer them.

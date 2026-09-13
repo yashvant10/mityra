@@ -1,0 +1,13 @@
+Traceback (most recent call last):
+  File "C:\Users\YASHVANT\Downloads\update-all-in-fashion-APP-main\backend-python\routers\admin.py", line 103, in get_dashboard_stats
+    all_users = await firebase_service.get_all_users()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\YASHVANT\Downloads\update-all-in-fashion-APP-main\backend-python\services\firebase_service.py", line 239, in get_all_users
+    users, _ = get_users_paginated(limit=100)
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\YASHVANT\Downloads\update-all-in-fashion-APP-main\backend-python\services\firebase_service.py", line 223, in get_users_paginated
+    snapshot = log_query_perf("get_users_paginated", query_ref)
+  File "C:\Users\YASHVANT\Downloads\update-all-in-fashion-APP-main\backend-python\services\firebase_service.py", line 13, in log_query_perf
+    print(f"[FIRESTORE-PERF] Query '{name}' took {elapsed:.3f}s, returned {count} documents (consumed {count} reads).", file=sys.stderr)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 22] Invalid argument

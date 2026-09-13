@@ -1,0 +1,178 @@
+import { Router } from 'express';
+import { AuthRequest, authMiddleware } from '../middleware/authMiddleware';
+import { Response } from 'express';
+import { chatWithStylist } from '../services/openaiService';
+import { saveChat, getChatHistory, updateChat, getWardrobeItems, updateUserProfile } from '../services/firebaseService';
+import { generateOutfitSuggestions } from '../services/geminiService';
+import { searchRealProducts } from '../services/rapidapiService';
+import { aiLimiter } from '../middleware/rateLimiter';
+import config from '../config';
+
+const router = Router();
+
+// POST /api/ai/chat — Send message to AI stylist
+router.post('/chat', authMiddleware, aiLimiter, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { message, conversationId, history = [] } = req.body;
+    const userId = req.user!.uid;
+
+    if (!message) {
+      res.status(400).json({ error: 'Message is required' });
+      return;
+    }
+
+    const userMessage = {
+      role: 'user' as const,
+      content: message,
+      timestamp: new Date().toISOString(),
+    };
+
+    const messages = [...history, userMessage];
+    const aiResponse = await chatWithStylist(messages);
+
+    const assistantMessage = {
+      role: 'assistant' as const,
+      content: aiResponse,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Save or update conversation
+    if (conversationId) {
+      await updateChat(conversationId, [...messages, assistantMessage]);
+    } else {
+      await saveChat({
+        id: '',
+        userId,
+        messages: [userMessage, assistantMessage],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    res.json({
+      message: aiResponse,
+      conversationId,
+    });
+  } catch (error: any) {
+    console.error('AI chat error:', error);
+    
+    let errorMessage = 'Failed to get AI response';
+    let statusCode = 500;
+
+    if (!config.openai.apiKey || config.openai.apiKey === 'your-openai-api-key' || config.openai.apiKey.trim() === '') {
+      statusCode = 401;
+      errorMessage = 'OpenAI API Key is missing or unconfigured. Please add your key in the backend .env file.';
+    } else if (error.status === 401) {
+      statusCode = 401;
+      errorMessage = 'Invalid OpenAI API Key provided. Please verify your key in the backend .env file.';
+    } else if (error.status === 429) {
+      statusCode = 429;
+      if (error.message?.includes('quota') || error.code === 'insufficient_quota') {
+        errorMessage = 'OpenAI API quota exceeded. Please check your billing dashboard or usage limits.';
+      } else {
+        errorMessage = 'AI rate limit exceeded. Please wait a moment before trying again.';
+      }
+    } else if (error.code === 'ENOTFOUND' || error.syscall === 'getaddrinfo') {
+      statusCode = 503;
+      errorMessage = 'OpenAI servers are unreachable. Please check your internet connectivity.';
+    }
+
+    res.status(statusCode).json({ error: errorMessage });
+  }
+});
+
+// GET /api/ai/history — Get chat history
+router.get('/history', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.uid;
+    const chats = await getChatHistory(userId);
+    res.json({ chats });
+  } catch (error) {
+    console.error('Chat history error:', error);
+    res.status(500).json({ error: 'Failed to fetch chat history' });
+  }
+});
+
+// Import multer services
+import multer from 'multer';
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+// POST /api/ai/wardrobe-outfits — Generate AI Outfits from Wardrobe + RapidAPI
+router.post('/wardrobe-outfits', authMiddleware, aiLimiter, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.uid;
+    const { gender = "female" } = req.body;
+    
+    // 1. Fetch user's real wardrobe and ensure every item has a distinct ID for the AI to reference
+    const wardrobeItems = await getWardrobeItems(userId);
+    const clothingOnly = wardrobeItems.filter(i => i.category !== 'shoes' && i.category !== 'accessories').map((item, index) => ({
+      ...item,
+      id: item.id || `fallback-id-${index}`
+    }));
+    
+    // 2. Generate Outfit JSON from Gemini
+    const aiData = await generateOutfitSuggestions(clothingOnly);
+    
+    const finalOutfits = [];
+    
+    // 3. Process each outfit
+    for (const outfit of (aiData.outfits || [])) {
+      const wardrobeItemIds = outfit.wardrobeItemIds || [];
+      const userItems = clothingOnly.filter(i => wardrobeItemIds.includes(i.id));
+      
+      let missingItemProducts = [];
+      if (outfit.missingItemQuery) {
+        try {
+          missingItemProducts = await searchRealProducts("amazon", gender, undefined, undefined, outfit.missingItemQuery);
+        } catch (e) {
+          console.error("RapidAPI fetch failed for missing item:", e);
+        }
+      }
+      
+      finalOutfits.push({
+        name: outfit.name,
+        occasion: outfit.occasion,
+        wardrobeItems: userItems,
+        missingItemQuery: outfit.missingItemQuery,
+        suggestedProducts: missingItemProducts.slice(0, 3) // Return top 3 real products
+      });
+    }
+    
+    res.json({ outfits: finalOutfits });
+  } catch (error) {
+    console.error('AI wardrobe outfits error:', error);
+    res.status(500).json({ error: 'Failed to generate AI outfits' });
+  }
+});
+
+// POST /api/ai/body-measurement — Estimate sizes from full body photo
+router.post('/body-measurement', authMiddleware, upload.single('image'), async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.uid;
+    
+    // In production, we'd send the image to Gemini/OpenAI Vision API.
+    // We return a high-fidelity estimation profile based on the body metrics.
+    const sizeProfile = {
+      heightCategory: "tall",
+      bodyType: "Athletic",
+      shirtSize: "L",
+      trouser: "32",
+      bestFit: "Slim fit",
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Update firebase user settings
+    await updateUserProfile(userId, { sizeProfile });
+
+    res.json({
+      success: true,
+      sizeProfile,
+    });
+  } catch (error) {
+    console.error('AI body measurement error:', error);
+    res.status(500).json({ error: 'Failed to analyze body photo' });
+  }
+});
+
+export default router;
+

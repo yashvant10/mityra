@@ -1,0 +1,991 @@
+"use client";
+
+import { useState, useCallback, useRef } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+  Upload,
+  Camera,
+  X,
+  ChevronRight,
+  ChevronLeft,
+  RefreshCcw,
+  Heart,
+  ExternalLink,
+  AlertCircle,
+  Sparkles,
+  Wand2,
+  Check,
+  Palette,
+  Shirt,
+  ShoppingBag,
+} from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { toast } from "sonner";
+import TopNav from "@/components/dashboard/TopNav";
+import { addFavorite } from "@/lib/favoritesApi";
+
+// ─── Types ──────────────────────────────────────────────────────────────────────
+interface AIAnalysis {
+  skinTone: string;
+  faceShape: string;
+  ageGroup: string;
+  gender: string;
+  recommendedColors: string[];
+  recommendedStyles: string[];
+  recommendedFits: string[];
+  recommendedOccasions: string[];
+  avoidColors: string[];
+  personalityStyle: string;
+  styleExplanation: string;
+}
+
+interface Product {
+  id: string;
+  name: string;
+  imageUrl: string;
+  image?: string;
+  price: string | null;
+  originalPrice?: string | null;
+  discount?: string | null;
+  brand?: string | null;
+  store: string;
+  platform?: string;
+  rating?: number | null;
+  reviews?: number | null;
+  productUrl: string;
+}
+
+// ─── Constants ──────────────────────────────────────────────────────────────────
+const OCCASIONS = [
+  "Casual", "College", "Office", "Party", "Wedding",
+  "Traditional", "Date Night", "Streetwear", "Sports", "Festival",
+];
+const STYLES = [
+  "Minimal", "Classic", "Modern", "Street", "Elegant", "Trendy", "Traditional",
+];
+const BUDGETS = [
+  { label: "Under ₹1,000", value: "under-1000" },
+  { label: "₹1,000 – ₹2,500", value: "1000-2500" },
+  { label: "₹2,500 – ₹5,000", value: "2500-5000" },
+  { label: "₹5,000+", value: "5000-plus" },
+];
+
+const ANALYSIS_MESSAGES = [
+  "Understanding your style...",
+  "Finding looks that suit you...",
+  "Curating your recommendations...",
+];
+
+// ─── Helpers ────────────────────────────────────────────────────────────────────
+const fileToBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+const decodeHtml = (str: string): string => {
+  if (!str) return "";
+  let d = str;
+  for (let i = 0; i < 3; i++) {
+    const prev = d;
+    d = d
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/&#x27;;?/g, "'").replace(/&#39;;?/g, "'")
+      .replace(/&#x2F;/g, "/").replace(/&apos;/g, "'");
+    if (d === prev) break;
+  }
+  return d;
+};
+
+// ─── Component ──────────────────────────────────────────────────────────────────
+export default function FindYourLookPage() {
+  const { user } = useAuth();
+  const router = useRouter();
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001/api";
+
+  // Wizard state
+  const [step, setStep] = useState(1);
+
+  // Step 1: Photo
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Step 2: Preferences
+  const [category, setCategory] = useState<string>("Men");
+  const [selectedOccasions, setSelectedOccasions] = useState<string[]>([]);
+  const [selectedStyles, setSelectedStyles] = useState<string[]>([]);
+  const [selectedBudget, setSelectedBudget] = useState<string>("");
+
+  // Step 3: Results
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisMsg, setAnalysisMsg] = useState(0);
+  const [analysis, setAnalysis] = useState<AIAnalysis | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // ─── Photo Upload ─────────────────────────────────────────────────────────────
+  const handlePhotoSelect = useCallback(async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("Image must be under 10MB");
+      return;
+    }
+    setPhotoFile(file);
+    const preview = await fileToBase64(file);
+    setPhotoPreview(preview);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (file) handlePhotoSelect(file);
+    },
+    [handlePhotoSelect]
+  );
+
+  const removePhoto = () => {
+    setPhotoFile(null);
+    setPhotoPreview(null);
+  };
+
+  // ─── Preference Toggles ───────────────────────────────────────────────────────
+  const toggleOccasion = (o: string) =>
+    setSelectedOccasions((prev) =>
+      prev.includes(o) ? prev.filter((x) => x !== o) : [...prev, o]
+    );
+  const toggleStyle = (s: string) =>
+    setSelectedStyles((prev) =>
+      prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]
+    );
+
+  // ─── AI Analysis ──────────────────────────────────────────────────────────────
+  const runAnalysis = useCallback(async () => {
+    if (!photoPreview) return;
+    setAnalyzing(true);
+    setError(null);
+    setAnalysisMsg(0);
+
+    // Rotate analysis messages
+    const msgInterval = setInterval(() => {
+      setAnalysisMsg((prev) => Math.min(prev + 1, ANALYSIS_MESSAGES.length - 1));
+    }, 3000);
+
+    try {
+      const token =
+        user && typeof (user as any).getIdToken === "function"
+          ? await (user as any).getIdToken()
+          : "mock-token-123";
+
+      // 1. Call Gemini face analysis
+      const analysisRes = await fetch(`${API_URL}/tryon/analyse-face`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ faceImageUrl: photoPreview }),
+      });
+
+      if (!analysisRes.ok) {
+        throw new Error("AI analysis failed. Please try again.");
+      }
+
+      const analysisData: AIAnalysis = await analysisRes.json();
+      setAnalysis(analysisData);
+
+      // 2. Build search query from AI analysis + user preferences
+      const gender = category === "Women" ? "female" : "male";
+      const styleTerms = [
+        ...(analysisData.recommendedStyles || []).slice(0, 2),
+        ...(selectedStyles.length > 0 ? selectedStyles.slice(0, 2) : []),
+      ];
+      const occasionTerms =
+        selectedOccasions.length > 0
+          ? selectedOccasions.slice(0, 2)
+          : (analysisData.recommendedOccasions || []).slice(0, 2);
+      const colorTerms = (analysisData.recommendedColors || []).slice(0, 2);
+
+      const query = `${gender} ${styleTerms.join(" ")} ${occasionTerms.join(" ")} ${colorTerms.join(" ")} outfit`
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // 3. Fetch products from multiple stores in parallel
+      setLoadingProducts(true);
+      const stores = ["amazon", "myntra", "flipkart", "ajio"];
+      const results = await Promise.allSettled(
+        stores.map((store) =>
+          fetch(
+            `${API_URL}/tryon/products?store=${store}&gender=${gender}&q=${encodeURIComponent(query)}&limit=4`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          ).then((r) => (r.ok ? r.json() : { products: [] }))
+        )
+      );
+
+      let allProducts: Product[] = [];
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          const valid = (r.value.products || []).filter(
+            (p: any) => p.imageUrl || p.image
+          );
+          allProducts.push(
+            ...valid.map((p: any) => ({
+              id: p.id || `p_${Math.random().toString(36).slice(2)}`,
+              name: decodeHtml(p.name || p.title || ""),
+              imageUrl: p.imageUrl || p.image || "",
+              price: p.price || null,
+              originalPrice: p.originalPrice || null,
+              discount: p.discount || null,
+              brand: p.brand || null,
+              store: p.store || p.platform || "Store",
+              platform: p.platform || p.store || "Store",
+              rating: p.rating || null,
+              reviews: p.reviews || null,
+              productUrl: p.productUrl || p.url || "",
+            }))
+          );
+        }
+      }
+
+      // Deduplicate by name
+      const seen = new Set<string>();
+      const uniqueProducts = allProducts.filter((p) => {
+        const key = p.name.toLowerCase().slice(0, 40);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      setProducts(uniqueProducts.slice(0, 12));
+      setLoadingProducts(false);
+      setStep(3);
+    } catch (err: any) {
+      console.error("[AI Style Match] Error:", err);
+      setError(err.message || "Something went wrong");
+    } finally {
+      clearInterval(msgInterval);
+      setAnalyzing(false);
+    }
+  }, [photoPreview, user, API_URL, category, selectedStyles, selectedOccasions]);
+
+  const handleProductClick = (product: Product) => {
+    router.push(
+      `/product-details?id=${encodeURIComponent(product.id)}&name=${encodeURIComponent(product.name)}&image=${encodeURIComponent(product.imageUrl)}&price=${encodeURIComponent(product.price || "")}&originalPrice=${encodeURIComponent(product.originalPrice || "")}&discount=${encodeURIComponent(product.discount || "")}&store=${encodeURIComponent(product.store || product.platform || "amazon")}&url=${encodeURIComponent(product.productUrl || "")}&brand=${encodeURIComponent(product.brand || "")}&rating=${product.rating || 4.5}&reviews=${product.reviews || 240}`
+    );
+  };
+
+  // ─── Step Indicator ───────────────────────────────────────────────────────────
+  const StepIndicator = () => (
+    <div className="flex items-center justify-center gap-3 mb-8">
+      {[
+        { n: 1, label: "Your Photo" },
+        { n: 2, label: "Your Preferences" },
+        { n: 3, label: "Your Looks" },
+      ].map((s, i) => (
+        <div key={s.n} className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold transition-all duration-300 ${
+                step >= s.n
+                  ? "bg-[#b95b6a] text-white"
+                  : "bg-[#F5F0EB] text-[#9B9B9B]"
+              }`}
+            >
+              {step > s.n ? <Check className="w-4 h-4" /> : s.n}
+            </div>
+            <span
+              className={`text-[12px] font-medium hidden sm:inline transition-colors duration-300 ${
+                step >= s.n ? "text-[#1A1A1A]" : "text-[#9B9B9B]"
+              }`}
+            >
+              {s.label}
+            </span>
+          </div>
+          {i < 2 && (
+            <div
+              className={`w-8 sm:w-12 h-0.5 rounded-full transition-all duration-500 ${
+                step > s.n ? "bg-[#b95b6a]" : "bg-[#E8E0D8]"
+              }`}
+            />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  // ─── Render ───────────────────────────────────────────────────────────────────
+  return (
+    <div className="flex-1 flex flex-col items-center">
+      <div className="w-full max-w-[1400px]">
+        <TopNav credits={0} />
+
+        <div className="px-4 sm:px-8 pb-12">
+          {/* Header */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6"
+          >
+            <div className="flex items-center gap-3 mb-2">
+              <Link
+                href="/dashboard"
+                className="text-[#6B6B6B] hover:text-[#1A1A1A] text-[13px] font-medium transition-colors"
+              >
+                ← Back to Dashboard
+              </Link>
+            </div>
+            <h1 className="text-[28px] sm:text-[32px] font-bold text-[#1A1A1A] font-heading flex items-center gap-3">
+              Find Your Look <Sparkles className="w-6 h-6 text-[#b95b6a]" />
+            </h1>
+            <p className="text-[14px] text-[#6B6B6B] mt-1">
+              Upload your photo and discover outfits that match your style.
+            </p>
+          </motion.div>
+
+          <StepIndicator />
+
+          {/* ═══ STEP 1: Photo Upload ═══ */}
+          <AnimatePresence mode="wait">
+            {step === 1 && !analyzing && (
+              <motion.div
+                key="step1"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.35 }}
+                className="max-w-2xl mx-auto"
+              >
+                <div className="bg-white rounded-[28px] p-6 sm:p-10 border border-[#E8E0D8] shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
+                  <h2 className="text-[20px] font-bold text-[#1A1A1A] font-heading mb-1">
+                    Upload Your Photo
+                  </h2>
+                  <p className="text-[13px] text-[#6B6B6B] mb-6">
+                    Use a clear photo with good lighting for better fashion recommendations.
+                  </p>
+
+                  {!photoPreview ? (
+                    <div
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={handleDrop}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="border-2 border-dashed border-[#E8E0D8] rounded-[20px] p-10 sm:p-16 flex flex-col items-center justify-center cursor-pointer hover:border-[#b95b6a]/40 hover:bg-[#FAF8F5] transition-all duration-300 group"
+                    >
+                      <div className="w-16 h-16 rounded-2xl bg-[#FAF1F2] flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
+                        <Upload className="w-7 h-7 text-[#b95b6a]" />
+                      </div>
+                      <p className="text-[14px] font-bold text-[#1A1A1A] mb-1">
+                        Drop your photo here
+                      </p>
+                      <p className="text-[12px] text-[#6B6B6B]">
+                        or click to browse • JPG, PNG up to 10MB
+                      </p>
+                    </div>
+                  ) : (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="relative"
+                    >
+                      <div className="aspect-[3/4] max-w-xs mx-auto rounded-[20px] overflow-hidden border border-[#E8E0D8] shadow-md">
+                        <img
+                          src={photoPreview}
+                          alt="Your photo"
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="flex justify-center gap-3 mt-5">
+                        <button
+                          onClick={() => fileInputRef.current?.click()}
+                          className="px-4 py-2 bg-[#FAF8F5] border border-[#E8E0D8] rounded-xl text-[12px] font-bold text-[#1A1A1A] hover:bg-[#F5F0EB] transition-colors"
+                        >
+                          Replace Photo
+                        </button>
+                        <button
+                          onClick={removePhoto}
+                          className="px-4 py-2 bg-[#FAF8F5] border border-[#E8E0D8] rounded-xl text-[12px] font-bold text-[#b95b6a] hover:bg-[#FAF1F2] transition-colors"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="user"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handlePhotoSelect(file);
+                    }}
+                  />
+
+                  {/* Photo guidance */}
+                  <div className="mt-6 flex flex-wrap gap-3 justify-center">
+                    {["Good lighting", "Clear photo", "Face visible", "No heavy filters"].map((tip) => (
+                      <span
+                        key={tip}
+                        className="text-[11px] text-[#6B6B6B] bg-[#FAF8F5] border border-[#E8E0D8] px-3 py-1.5 rounded-full"
+                      >
+                        ✓ {tip}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Continue */}
+                  <div className="mt-8 flex justify-end">
+                    <button
+                      onClick={() => photoPreview && setStep(2)}
+                      disabled={!photoPreview}
+                      className="inline-flex items-center gap-2 bg-[#b95b6a] text-white px-6 py-3 rounded-full text-[14px] font-bold hover:bg-[#a84e5b] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Continue <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* ═══ STEP 2: Preferences ═══ */}
+            {step === 2 && !analyzing && (
+              <motion.div
+                key="step2"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.35 }}
+                className="max-w-2xl mx-auto"
+              >
+                <div className="bg-white rounded-[28px] p-6 sm:p-10 border border-[#E8E0D8] shadow-[0_2px_16px_rgba(0,0,0,0.03)]">
+                  <h2 className="text-[20px] font-bold text-[#1A1A1A] font-heading mb-1">
+                    Tell us about your style
+                  </h2>
+                  <p className="text-[13px] text-[#6B6B6B] mb-8">
+                    Help us find styles that match your taste.
+                  </p>
+
+                  {/* Category */}
+                  <div className="mb-7">
+                    <label className="text-[13px] font-bold text-[#1A1A1A] mb-3 block">
+                      Category
+                    </label>
+                    <div className="flex gap-3">
+                      {["Men", "Women", "Kids"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => setCategory(c)}
+                          className={`px-5 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 border ${
+                            category === c
+                              ? "bg-[#FAF1F2] border-[#b95b6a]/30 text-[#1A1A1A]"
+                              : "bg-white border-[#E8E0D8] text-[#6B6B6B] hover:border-[#b95b6a]/20"
+                          }`}
+                        >
+                          {c}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Occasion */}
+                  <div className="mb-7">
+                    <label className="text-[13px] font-bold text-[#1A1A1A] mb-3 block">
+                      Occasion
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {OCCASIONS.map((o) => (
+                        <button
+                          key={o}
+                          onClick={() => toggleOccasion(o)}
+                          className={`px-4 py-2 rounded-xl text-[12px] font-bold transition-all duration-200 border ${
+                            selectedOccasions.includes(o)
+                              ? "bg-[#FAF1F2] border-[#b95b6a]/30 text-[#1A1A1A]"
+                              : "bg-white border-[#E8E0D8] text-[#6B6B6B] hover:border-[#b95b6a]/20"
+                          }`}
+                        >
+                          {o}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Style */}
+                  <div className="mb-7">
+                    <label className="text-[13px] font-bold text-[#1A1A1A] mb-3 block">
+                      Style
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {STYLES.map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => toggleStyle(s)}
+                          className={`px-4 py-2 rounded-xl text-[12px] font-bold transition-all duration-200 border ${
+                            selectedStyles.includes(s)
+                              ? "bg-[#FAF1F2] border-[#b95b6a]/30 text-[#1A1A1A]"
+                              : "bg-white border-[#E8E0D8] text-[#6B6B6B] hover:border-[#b95b6a]/20"
+                          }`}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Budget */}
+                  <div className="mb-8">
+                    <label className="text-[13px] font-bold text-[#1A1A1A] mb-3 block">
+                      Budget
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {BUDGETS.map((b) => (
+                        <button
+                          key={b.value}
+                          onClick={() => setSelectedBudget(b.value)}
+                          className={`px-4 py-2 rounded-xl text-[12px] font-bold transition-all duration-200 border ${
+                            selectedBudget === b.value
+                              ? "bg-[#FAF1F2] border-[#b95b6a]/30 text-[#1A1A1A]"
+                              : "bg-white border-[#E8E0D8] text-[#6B6B6B] hover:border-[#b95b6a]/20"
+                          }`}
+                        >
+                          {b.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Navigation */}
+                  <div className="flex justify-between">
+                    <button
+                      onClick={() => setStep(1)}
+                      className="inline-flex items-center gap-2 text-[#6B6B6B] text-[13px] font-bold hover:text-[#1A1A1A] transition-colors"
+                    >
+                      <ChevronLeft className="w-4 h-4" /> Back
+                    </button>
+                    <button
+                      onClick={runAnalysis}
+                      className="inline-flex items-center gap-2 bg-[#b95b6a] text-white px-6 py-3 rounded-full text-[14px] font-bold hover:bg-[#a84e5b] transition-colors"
+                    >
+                      <Sparkles className="w-4 h-4" /> Find My Style
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* ═══ ANALYZING ═══ */}
+            {analyzing && (
+              <motion.div
+                key="analyzing"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="max-w-lg mx-auto text-center py-16"
+              >
+                <motion.div
+                  animate={{ scale: [1, 1.08, 1] }}
+                  transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
+                  className="w-20 h-20 rounded-full bg-gradient-to-br from-[#FAF1F2] to-[#F5E6D8] flex items-center justify-center mx-auto mb-8"
+                >
+                  <Wand2 className="w-9 h-9 text-[#b95b6a]" />
+                </motion.div>
+
+                <AnimatePresence mode="wait">
+                  <motion.p
+                    key={analysisMsg}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.4 }}
+                    className="text-[16px] font-bold text-[#1A1A1A]"
+                  >
+                    {ANALYSIS_MESSAGES[analysisMsg]}
+                  </motion.p>
+                </AnimatePresence>
+
+                <div className="mt-6 flex justify-center gap-2">
+                  {[0, 1, 2].map((i) => (
+                    <motion.div
+                      key={i}
+                      animate={{ opacity: [0.3, 1, 0.3] }}
+                      transition={{ duration: 1.2, delay: i * 0.2, repeat: Infinity }}
+                      className="w-2 h-2 rounded-full bg-[#b95b6a]"
+                    />
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
+            {/* ═══ ERROR STATE ═══ */}
+            {error && !analyzing && step !== 3 && (
+              <motion.div
+                key="error"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="max-w-lg mx-auto text-center py-12"
+              >
+                <div className="w-16 h-16 rounded-full bg-[#FAF1F2] flex items-center justify-center mx-auto mb-4">
+                  <AlertCircle className="w-8 h-8 text-[#b95b6a]" />
+                </div>
+                <h3 className="text-[18px] font-bold text-[#1A1A1A] mb-2">
+                  Something went wrong
+                </h3>
+                <p className="text-[13px] text-[#6B6B6B] mb-6">{error}</p>
+                <button
+                  onClick={() => { setError(null); setStep(2); }}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-[#E8E0D8] rounded-full text-[13px] font-bold text-[#1A1A1A] hover:bg-[#F5F0EB] transition-colors"
+                >
+                  <RefreshCcw className="w-4 h-4" /> Try Again
+                </button>
+              </motion.div>
+            )}
+
+            {/* ═══ STEP 3: Results ═══ */}
+            {step === 3 && analysis && !analyzing && (
+              <motion.div
+                key="step3"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4 }}
+              >
+                {/* Analysis Summary */}
+                <div className="bg-white rounded-[28px] p-6 sm:p-10 border border-[#E8E0D8] shadow-[0_2px_16px_rgba(0,0,0,0.03)] mb-8 max-w-4xl mx-auto">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#FAF1F2] to-[#F5E6D8] flex items-center justify-center">
+                      <Sparkles className="w-5 h-5 text-[#b95b6a]" />
+                    </div>
+                    <div>
+                      <h2 className="text-[22px] font-bold text-[#1A1A1A] font-heading">
+                        Your Style Match
+                      </h2>
+                      <p className="text-[13px] text-[#6B6B6B]">
+                        Styles curated for you
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Style explanation */}
+                  {analysis.styleExplanation && (
+                    <motion.p
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.2 }}
+                      className="text-[14px] text-[#4A4A4A] leading-relaxed mt-4 mb-6 pl-4 border-l-2 border-[#b95b6a]/30 italic"
+                    >
+                      {analysis.styleExplanation}
+                    </motion.p>
+                  )}
+
+                  {/* Recommendation Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+                    {/* Recommended Colors */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.1 }}
+                      className="bg-[#FAF8F5] rounded-[18px] p-5 border border-[#E8E0D8]"
+                    >
+                      <div className="flex items-center gap-2 mb-3">
+                        <Palette className="w-4 h-4 text-[#b95b6a]" />
+                        <span className="text-[12px] font-bold text-[#1A1A1A]">Colors</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {analysis.recommendedColors?.map((c) => (
+                          <span key={c} className="text-[11px] bg-white border border-[#E8E0D8] px-2.5 py-1 rounded-lg text-[#4A4A4A] font-medium">
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    </motion.div>
+
+                    {/* Recommended Fits */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.2 }}
+                      className="bg-[#FAF8F5] rounded-[18px] p-5 border border-[#E8E0D8]"
+                    >
+                      <div className="flex items-center gap-2 mb-3">
+                        <Shirt className="w-4 h-4 text-[#b95b6a]" />
+                        <span className="text-[12px] font-bold text-[#1A1A1A]">Fits</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(analysis.recommendedFits || []).map((f) => (
+                          <span key={f} className="text-[11px] bg-white border border-[#E8E0D8] px-2.5 py-1 rounded-lg text-[#4A4A4A] font-medium">
+                            {f}
+                          </span>
+                        ))}
+                      </div>
+                    </motion.div>
+
+                    {/* Recommended Styles */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.3 }}
+                      className="bg-[#FAF8F5] rounded-[18px] p-5 border border-[#E8E0D8]"
+                    >
+                      <div className="flex items-center gap-2 mb-3">
+                        <Sparkles className="w-4 h-4 text-[#b95b6a]" />
+                        <span className="text-[12px] font-bold text-[#1A1A1A]">Styles</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {analysis.recommendedStyles?.map((s) => (
+                          <span key={s} className="text-[11px] bg-white border border-[#E8E0D8] px-2.5 py-1 rounded-lg text-[#4A4A4A] font-medium">
+                            {s}
+                          </span>
+                        ))}
+                      </div>
+                    </motion.div>
+
+                    {/* Recommended Occasions */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.4 }}
+                      className="bg-[#FAF8F5] rounded-[18px] p-5 border border-[#E8E0D8]"
+                    >
+                      <div className="flex items-center gap-2 mb-3">
+                        <ShoppingBag className="w-4 h-4 text-[#b95b6a]" />
+                        <span className="text-[12px] font-bold text-[#1A1A1A]">Occasions</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(analysis.recommendedOccasions || []).map((o) => (
+                          <span key={o} className="text-[11px] bg-white border border-[#E8E0D8] px-2.5 py-1 rounded-lg text-[#4A4A4A] font-medium">
+                            {o}
+                          </span>
+                        ))}
+                      </div>
+                    </motion.div>
+                  </div>
+
+                  {/* Personality Style */}
+                  {analysis.personalityStyle && (
+                    <div className="mt-5 text-center">
+                      <span className="inline-flex items-center gap-2 bg-[#FAF1F2] text-[#b95b6a] text-[12px] font-bold px-4 py-2 rounded-full">
+                        <Wand2 className="w-3.5 h-3.5" /> Your vibe: {analysis.personalityStyle}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* ═══ Product Recommendations ═══ */}
+                <div className="max-w-6xl mx-auto">
+                  <h3 className="text-[20px] font-bold text-[#1A1A1A] font-heading mb-1">
+                    Your Looks
+                  </h3>
+                  <p className="text-[13px] text-[#6B6B6B] mb-5">
+                    Here are styles selected for you.
+                  </p>
+
+                  {loadingProducts ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                        <div key={i} className="bg-white rounded-[18px] border border-[#E8E0D8] overflow-hidden">
+                          <div className="aspect-[3/4] bg-[#FAF8F5] animate-pulse" />
+                          <div className="p-4">
+                            <div className="h-4 bg-[#FAF8F5] rounded w-3/4 mb-2 animate-pulse" />
+                            <div className="h-3 bg-[#FAF8F5] rounded w-1/2 animate-pulse" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : products.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                      {products.map((product, idx) => (
+                        <motion.div
+                          key={product.id}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: idx * 0.05 }}
+                          className="bg-white rounded-[18px] border border-[#E8E0D8] overflow-hidden group hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] hover:border-[#b95b6a]/20 transition-all duration-300"
+                        >
+                          {/* Product Image */}
+                          <div
+                            className="aspect-[3/4] relative overflow-hidden cursor-pointer"
+                            onClick={() => handleProductClick(product)}
+                          >
+                            <img
+                              src={product.imageUrl}
+                              alt={product.name}
+                              className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = "none";
+                              }}
+                            />
+                            {/* Heart */}
+                            <button
+                              className="absolute top-2.5 right-2.5 w-8 h-8 bg-white/80 backdrop-blur-sm rounded-full flex items-center justify-center text-[#b95b6a] hover:bg-white hover:scale-110 transition-all z-10"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  await addFavorite({
+                                    productId: product.id || `fyl_${product.name.slice(0,20).replace(/\s/g,'_')}_${product.store}`,
+                                    name: product.name,
+                                    brand: product.brand,
+                                    price: product.price,
+                                    originalPrice: product.originalPrice,
+                                    discount: product.discount,
+                                    imageUrl: product.imageUrl,
+                                    store: product.store,
+                                    productUrl: product.productUrl,
+                                    category: "tops",
+                                  });
+                                  toast.success("Saved to Favorites ❤️");
+                                } catch (err: any) {
+                                  if (err?.response?.status === 409) {
+                                    toast.info("Already in your favorites");
+                                  } else {
+                                    toast.error("Failed to save");
+                                  }
+                                }
+                              }}
+                            >
+                              <Heart className="w-4 h-4" />
+                            </button>
+                            {/* Store badge */}
+                            <div className="absolute bottom-2.5 left-2.5 bg-white/90 backdrop-blur-sm rounded-lg px-2.5 py-1">
+                              <span className="text-[10px] font-bold text-[#1A1A1A] capitalize">
+                                {product.store}
+                              </span>
+                            </div>
+                            {/* Discount */}
+                            {product.discount && (
+                              <div className="absolute top-2.5 left-2.5 bg-[#2D6A4F] text-white text-[10px] font-bold px-2 py-0.5 rounded-lg">
+                                {product.discount}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Product Info */}
+                          <div className="p-3.5">
+                            <h4
+                              className="text-[12px] font-bold text-[#1A1A1A] line-clamp-2 mb-1 leading-snug cursor-pointer hover:text-[#b95b6a] transition-colors"
+                              onClick={() => handleProductClick(product)}
+                            >
+                              {product.name}
+                            </h4>
+                            {product.brand && (
+                              <p className="text-[10px] text-[#6B6B6B] mb-1.5">{product.brand}</p>
+                            )}
+                            <div className="flex items-center gap-2 mb-2.5">
+                              {product.price && (
+                                <span className="text-[13px] font-bold text-[#1A1A1A]">
+                                  {product.price}
+                                </span>
+                              )}
+                              {product.originalPrice && (
+                                <span className="text-[11px] text-[#9B9B9B] line-through">
+                                  {product.originalPrice}
+                                </span>
+                              )}
+                            </div>
+                            {product.rating && (
+                              <p className="text-[10px] text-[#6B6B6B] mb-2.5">
+                                ★ {product.rating}
+                                {product.reviews ? ` (${product.reviews})` : ""}
+                              </p>
+                            )}
+
+                            {/* Actions */}
+                            <div className="flex gap-2">
+                              <Link
+                                href={`/try-on?platform=${(product.platform || product.store).toLowerCase()}&image=${encodeURIComponent(product.imageUrl)}&name=${encodeURIComponent(product.name)}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex-1 text-center py-2 bg-[#FAF8F5] border border-[#E8E0D8] rounded-xl text-[11px] font-bold text-[#1A1A1A] hover:bg-[#F5F0EB] transition-colors"
+                              >
+                                Try On
+                              </Link>
+                              <button
+                                onClick={() => handleProductClick(product.productUrl)}
+                                className="flex-1 text-center py-2 bg-[#b95b6a] rounded-xl text-[11px] font-bold text-white hover:bg-[#a84e5b] transition-colors flex items-center justify-center gap-1"
+                              >
+                                Shop <ExternalLink className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 bg-white rounded-[24px] border border-dashed border-[#E8E0D8]">
+                      <AlertCircle className="w-8 h-8 text-[#b95b6a] mx-auto mb-3 opacity-50" />
+                      <p className="text-[14px] font-bold text-[#1A1A1A] mb-1">
+                        No matching styles yet
+                      </p>
+                      <p className="text-[12px] text-[#6B6B6B] mb-4">
+                        Try adjusting your preferences.
+                      </p>
+                      <button
+                        onClick={() => setStep(2)}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-[#E8E0D8] rounded-full text-[12px] font-bold text-[#1A1A1A] hover:bg-[#F5F0EB] transition-colors"
+                      >
+                        <RefreshCcw className="w-3.5 h-3.5" /> Adjust Preferences
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Premium CTA */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.5 }}
+                    className="mt-10 bg-gradient-to-r from-[#FAF1F2] to-[#F5E6D8] rounded-[24px] p-6 sm:p-8 border border-[#E8E0D8] flex flex-col sm:flex-row items-center gap-5"
+                  >
+                    <div className="w-14 h-14 rounded-2xl bg-white/70 flex items-center justify-center flex-shrink-0">
+                      <Camera className="w-7 h-7 text-[#b95b6a]" />
+                    </div>
+                    <div className="flex-1 text-center sm:text-left">
+                      <h4 className="text-[16px] font-bold text-[#1A1A1A] mb-1">
+                        Want to see it on you?
+                      </h4>
+                      <p className="text-[13px] text-[#6B6B6B]">
+                        Try your favorite outfit with ANT.ai Virtual Try-On.
+                      </p>
+                    </div>
+                    <Link
+                      href="/try-on"
+                      className="inline-flex items-center gap-2 bg-[#b95b6a] text-white px-6 py-3 rounded-full text-[13px] font-bold hover:bg-[#a84e5b] transition-colors flex-shrink-0"
+                    >
+                      Try It On <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  </motion.div>
+
+                  {/* Back to Dashboard */}
+                  <div className="mt-8 flex justify-center gap-4">
+                    <Link
+                      href="/dashboard"
+                      className="text-[13px] font-bold text-[#6B6B6B] hover:text-[#1A1A1A] transition-colors"
+                    >
+                      ← Back to Dashboard
+                    </Link>
+                    <button
+                      onClick={() => {
+                        setStep(1);
+                        setAnalysis(null);
+                        setProducts([]);
+                        removePhoto();
+                      }}
+                      className="text-[13px] font-bold text-[#b95b6a] hover:text-[#a84e5b] transition-colors"
+                    >
+                      Start Over
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+}

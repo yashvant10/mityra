@@ -1,0 +1,15 @@
+{
+  "sample_rate": 16000,
+  "channels": 1,
+  "labels": {
+    "platforms": ["amazon", "myntra", "flipkart", "ajio", "meesho"],
+    "categories": ["t-shirt", "shirt", "jeans", "trousers", "dress", "saree", "kurta", "jacket", "sweater", "shoes"],
+    "colors": ["red", "blue", "green", "black", "white", "yellow", "pink", "purple", "orange", "grey", "brown"],
+    "occasions": ["casual", "formal", "party", "wedding", "sports", "ethnic"]
+  },
+  "training": {
+    "batch_size": 32,
+    "epochs": 10,
+    "learning_rate": 3e-5
+  }
+}

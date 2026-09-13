@@ -1,0 +1,33 @@
+# Next.js / Node
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Python virtual env and cache
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Environment variables / private keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+serviceAccountKey.json
+*.p12
+
+# Scraper cache / temporary html files
+*_search.html
+*.log
